@@ -1,0 +1,9 @@
+*
+!/**/
+!*.*
+
+!Makefile
+
+hw3-sample.c
+.vscode/
+benchmark/

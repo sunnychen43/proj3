@@ -2,8 +2,11 @@
 #include <math.h>
 #include <sys/mman.h>
 #include <string.h>
+#include <pthread.h>
+#include <stdbool.h>
 
 #define ADDR_SIZE 8  // change when 32-bit
+#define VADDR_BASE 0x3000
 
 #define NUM_VPAGES      MAX_MEMSIZE/PGSIZE
 #define NUM_PPAGES      MEMSIZE/PGSIZE
@@ -15,7 +18,6 @@
 #define OFFSET_BITS (int)log2(PGSIZE)
 #define PT_BITS (int)log2(PGSIZE/ADDR_SIZE)
 #define PD_BITS 32-PT_BITS-OFFSET_BITS
-
 
 
 
@@ -32,6 +34,14 @@ int get_bit_at_index(char *bitmap, int index) {
     return (*bitmap >> index) & 1;
 }
 
+
+void print_bitmap(char *bitmap) {
+    for (int i=0; i < 8; i++) {
+        printf("%d", get_bit_at_index(bitmap, i));
+    }
+    printf("\n");
+}
+
 unsigned int get_top_bits(unsigned int value, int num_bits) {
     int num_bits_to_prune = 32 - num_bits; //32 assuming we are using 32-bit address 
     return (value >> num_bits_to_prune);
@@ -46,14 +56,19 @@ unsigned int get_mid_bits(unsigned int value, int num_middle_bits, int num_lower
     return mid_bits_value;
 }
 
+unsigned int get_low_bits(unsigned int value, int num_bits) {
+    return value & ((1<<num_bits)-1);
+}
 
+static char *mem;
+static char *pbitmap, *vbitmap;
 static pde_t *pd;
-static block mem_blocks[NUM_BLOCKS];
-static char *vbitmap;
+static pthread_mutex_t lock;
+static bool flag;
 
-char *find_next_ppage(char *mem, char *pbitmap) {
+void *find_next_ppage() {
     for (int i=0; i < PPAGE_BITMAP_SIZE; i++) {
-        if (pbitmap[i] != 255) {
+        if (pbitmap[i] != 127) {
             for (int j=0; j < 8; j++) {
                 if (get_bit_at_index(pbitmap+i, j) == 0) {
                     set_bit_at_index(pbitmap+i, j);
@@ -66,14 +81,14 @@ char *find_next_ppage(char *mem, char *pbitmap) {
     return NULL;
 }
 
-void *find_next_vpage(char *vbitmap) {
+void *find_next_vaddr() {
     for (int i=0; i < PPAGE_BITMAP_SIZE; i++) {
-        if (vbitmap[i] != 255) {
+        if (vbitmap[i] != 127) {
             for (int j=0; j < 8; j++) {
                 if (get_bit_at_index(vbitmap+i, j) == 0) {
                     // set_bit_at_index(vbitmap+i, j);
                     size_t offset = PGSIZE * (i*8 + j);
-                    return (void *)(0ULL+offset);
+                    return (void *)(0ULL+offset+VADDR_BASE);
                 }
             }
         }
@@ -81,32 +96,22 @@ void *find_next_vpage(char *vbitmap) {
     return NULL;
 }
 
-/*
-Function responsible for allocating and setting your physical memory 
-*/
-void init_block(block *block_ptr) {
-    block_ptr->mem = mmap(NULL, MEMSIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    block_ptr->pbitmap = malloc(PPAGE_BITMAP_SIZE);
-    memset(block_ptr->pbitmap, 0, PPAGE_BITMAP_SIZE);
-}
-
-void init_pt(char *mem) {
-    memset(mem, 0, PGSIZE);
-}
 
 void set_physical_mem() {
+    mem = mmap(NULL, MEMSIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+    pbitmap = malloc(PPAGE_BITMAP_SIZE);
+    memset(pbitmap, 0, PPAGE_BITMAP_SIZE);
     vbitmap = malloc(VPAGE_BITMAP_SIZE);
     memset(vbitmap, 0, VPAGE_BITMAP_SIZE);
 
-    pd = malloc(ADDR_SIZE*(int)pow(2, PD_BITS));
-    memset(pd, 0, ADDR_SIZE*(int)pow(2, PD_BITS));
+    // reserve two pages for pd
+    pd = find_next_ppage();
+    find_next_ppage();
+    memset(pd, 0, (int)pow(2, PD_BITS)*ADDR_SIZE);
 
-    init_block(&mem_blocks[0]);
-    pd[0] = (pde_t)find_next_ppage(mem_blocks[0].mem, mem_blocks[0].pbitmap);
-    find_next_vpage(vbitmap);
-    page_map(pd, 0x0, (void*)pd[0]);
-    // *(pte_t*)pd[0] = pd[0];  // set first entry of page to refer to itself
-    printf("%p %p\n", *(pte_t*)pd[0], mem_blocks[0].mem);
+    pd[0] = (pte_t)find_next_ppage();
+    memset((void *)pd[0], 0, PGSIZE);
 }
 
 
@@ -114,18 +119,14 @@ void set_physical_mem() {
 The function takes a virtual address and page directories starting address and
 performs translation to return the physical address
 */
-pte_t *translate(pde_t *pgdir, void *va) {
-    /* Part 1 HINT: Get the Page directory index (1st level) Then get the
-    * 2nd-level-page table index using the virtual address.  Using the page
-    * directory index and page table index get the physical address.
-    *
-    * Part 2 HINT: Check the TLB before performing the translation. If
-    * translation exists, then you can return physical address from the TLB.
-    */
+void *translate(pde_t *pgdir, void *va) {
+    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    int pd_index = get_top_bits(addr, PD_BITS);
+    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
+    int offset = get_low_bits(addr, OFFSET_BITS);
 
-
-    //If translation not successfull
-    return NULL; 
+    pte_t *pt = (pte_t*)pd[pd_index];
+    return (void *)pt[pt_index]+offset; 
 }
 
 
@@ -136,8 +137,9 @@ directory to see if there is an existing mapping for a virtual address. If the
 virtual address is not present, then a new entry will be added
 */
 int page_map(pde_t *pgdir, void *va, void *pa) {
-    unsigned int pd_index = get_top_bits((unsigned int)va, PD_BITS);
-    unsigned int pt_index = get_mid_bits((unsigned int)va, PT_BITS, OFFSET_BITS);
+    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    int pd_index = get_top_bits(addr, PD_BITS);
+    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
 
     int pte_per_page = PGSIZE / ADDR_SIZE;
     int index = pd_index * pte_per_page + pt_index;
@@ -146,9 +148,13 @@ int page_map(pde_t *pgdir, void *va, void *pa) {
     if (bit == 1) {
         return -1;
     }
-    else {
-        *(pte_t*)pgdir[pd_index] = pa;
+
+    pte_t *pt = (pte_t*)pd[pd_index];
+    if (pt == NULL) {
+        
     }
+    pt[pt_index] = (pte_t)pa;
+
     return 0;
 }
 
@@ -156,42 +162,106 @@ int page_map(pde_t *pgdir, void *va, void *pa) {
 /*Function that gets the next available page
 */
 void *get_next_avail(int num_pages) {
- 
-    //Use virtual address bitmap to find the next free page
+    int count = 0;
+    for (int i=0; i < VPAGE_BITMAP_SIZE; i++) {
+        for (int j=0; j < 8; j++) {
+            int bit = get_bit_at_index(&vbitmap[i], j);
+            if (bit == 0) {
+                count++;
+                if (count == num_pages) {
+                    int index = (i*8 + j) - (num_pages-1);
+                    return (void*)(unsigned long)(VADDR_BASE + index*PGSIZE);
+                }
+            }
+            else {
+                count = 0;
+            }
+        }
+    }
+    return NULL;
 }
 
+
+void reserve_vpage(void *va) {
+    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    int pd_index = get_top_bits(addr, PD_BITS);
+    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
+
+    int pte_per_page = PGSIZE / ADDR_SIZE;
+    int index = pd_index * pte_per_page + pt_index;
+    
+    set_bit_at_index(&vbitmap[index/8], index%8);
+}
+
+void clear_vpage(void *va) {
+    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    int pd_index = get_top_bits(addr, PD_BITS);
+    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
+
+    int pte_per_page = PGSIZE / ADDR_SIZE;
+    int index = pd_index * pte_per_page + pt_index;
+    
+    clear_bit_at_index(&vbitmap[index/8], index%8);
+}
+
+pde_t get_pd_entry(void *va) {
+    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    int pd_index = get_top_bits(addr, PD_BITS);
+    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
+
+    return pd[pd_index];
+}
+
+pte_t get_pt_entry(void *va) {
+    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    int pd_index = get_top_bits(addr, PD_BITS);
+    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
+
+    pte_t *pt = (pte_t*)pd[pd_index];
+    return pt[pt_index];
+}
 
 /* Function responsible for allocating pages
 and used by the benchmark
 */
 void *a_malloc(unsigned int num_bytes) {
+    while (__sync_lock_test_and_set(&flag, 1) == 1) {
+    }
 
-    /* 
-     * HINT: If the physical memory is not yet initialized, then allocate and initialize.
-     */
+    if (mem == NULL) {
+        set_physical_mem();
+    }
 
-   /* 
-    * HINT: If the page directory is not initialized, then initialize the
-    * page directory. Next, using get_next_avail(), check if there are free pages. If
-    * free pages are available, set the bitmaps and map a new page. Note, you will 
-    * have to mark which physical pages are used. 
-    */
+    int num_pages = ceil((double)num_bytes/PGSIZE);
+    void *base_va = get_next_avail(num_pages);
+    for (int i=0; i < num_pages; i++) {
+        void *va = base_va+i*PGSIZE;
+        if (get_pd_entry(va) == 0) {
+            unsigned int addr = (unsigned int)va - VADDR_BASE;
+            int pd_index = get_top_bits(addr, PD_BITS);
+            pd[pd_index] = (pte_t)find_next_ppage();
+            memset((void*)pd[pd_index], 0, PGSIZE);
+        }
+        if (get_pt_entry(va) == 0) {
+            void *page = find_next_ppage();
+            page_map(pd, va, page);
+        }
+        reserve_vpage(va);
+    }
 
-    return NULL;
+    __sync_lock_test_and_set(&flag, 0);
+    return base_va;
 }
 
 /* Responsible for releasing one or more memory pages using virtual address (va)
 */
 void a_free(void *va, int size) {
-
-    /* Part 1: Free the page table entries starting from this virtual address
-     * (va). Also mark the pages free in the bitmap. Perform free only if the 
-     * memory from "va" to va+size is valid.
-     *
-     * Part 2: Also, remove the translation from the TLB
-     */
-     
-    
+    while (__sync_lock_test_and_set(&flag, 1) == 1) {
+    }
+    for (void *addr=va; addr < va+size; addr += PGSIZE) {
+        clear_vpage(addr);
+    }
+    __sync_lock_test_and_set(&flag, 0);
 }
 
 
@@ -199,29 +269,21 @@ void a_free(void *va, int size) {
  * memory pages using virtual address (va)
 */
 void put_value(void *va, void *val, int size) {
-
-    /* HINT: Using the virtual address and translate(), find the physical page. Copy
-     * the contents of "val" to a physical page. NOTE: The "size" value can be larger 
-     * than one page. Therefore, you may have to find multiple pages using translate()
-     * function.
-     */
-
-
-
-
+    char *addr;
+    for (int i=0; i < size; i++) {
+        addr = translate(pd, va+i);
+        *addr = *((char*)val+i);
+    }
 }
 
 
 /*Given a virtual address, this function copies the contents of the page to val*/
 void get_value(void *va, void *val, int size) {
-
-    /* HINT: put the values pointed to by "va" inside the physical memory at given
-    * "val" address. Assume you can access "val" directly by derefencing them.
-    */
-
-
-
-
+    char *addr;
+    for (int i=0; i < size; i++) {
+        addr = translate(pd, va+i);
+        *((char*)val+i) = *addr;
+    }
 }
 
 
@@ -232,18 +294,33 @@ argument representing the number of rows and columns. After performing matrix
 multiplication, copy the result to answer.
 */
 void mat_mult(void *mat1, void *mat2, int size, void *answer) {
+    for (int i=0; i < size; i++) {
+        for (int j=0; j < size; j++) {
+            int sum = 0;
+            for (int k=0; k < size; k++) {
+                void *a = mat1 + (i*size + k)*sizeof(int);
+                void *b = mat2 + (k*size + j)*sizeof(int);
 
-    /* Hint: You will index as [i * size + j] where  "i, j" are the indices of the
-     * matrix accessed. Similar to the code in test.c, you will use get_value() to
-     * load each element and perform multiplication. Take a look at test.c! In addition to 
-     * getting the values from two matrices, you will perform multiplication and 
-     * store the result to the "answer array"
-     */
-
-       
+                int mat1_val, mat2_val;
+                get_value(a, &mat1_val, sizeof(int));
+                get_value(b, &mat2_val, sizeof(int));
+                sum += mat1_val * mat2_val;
+            }
+            void *addr = answer + (i*size + j)*sizeof(int);
+            put_value(addr, &sum, sizeof(int));
+        }
+    }
 }
 
+
 int main() {
-    set_physical_mem();
-    return 0;
+    a_malloc(PGSIZE*1024);
+    int count = 0;
+    for (int i=0; i < VPAGE_BITMAP_SIZE; i++) {
+        for (int j=0; j < 8; j++) {
+            if (get_bit_at_index(&pbitmap[i], j) == 1)
+                count++;
+        }
+    }
+    printf("%d\n", count);
 }

@@ -37,7 +37,7 @@ typedef struct block {
 
 
 void set_physical_mem();
-pte_t* translate(pde_t *pgdir, void *va);
+void *translate(pde_t *pgdir, void *va);
 int page_map(pde_t *pgdir, void *va, void* pa);
 bool check_in_tlb(void *va);
 void put_in_tlb(void *va, void *pa);

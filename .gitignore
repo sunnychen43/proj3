@@ -7,3 +7,9 @@
 hw3-sample.c
 .vscode/
 benchmark/
+
+.DS_store
+*.out
+*.o
+*.dSYM/
+*.a

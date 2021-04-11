@@ -66,7 +66,6 @@ static tlb_t tlb;
 static bool flag;
 
 void *find_next_ppage() {
-    count++;
     for (int i=0; i < PPAGE_BITMAP_SIZE; i++) {
         if (pbitmap[i] != ~0) {
             for (int j=0; j < 8; j++) {
@@ -208,7 +207,7 @@ void *get_next_avail(int num_pages) {
 }
 
 
-void reserve_vpage(void *va) {
+void change_vbitmap(void *va, int val) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
@@ -216,18 +215,12 @@ void reserve_vpage(void *va) {
     int pte_per_page = PGSIZE / ADDR_SIZE;
     int index = pd_index * pte_per_page + pt_index;
     
-    set_bit_at_index(&vbitmap[index/8], index%8);
-}
-
-void clear_vpage(void *va) {
-    unsigned long addr = (unsigned long)va - VADDR_BASE;
-    int pd_index = get_top_bits(addr, PD_BITS);
-    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
-
-    int pte_per_page = PGSIZE / ADDR_SIZE;
-    int index = pd_index * pte_per_page + pt_index;
-    
-    clear_bit_at_index(&vbitmap[index/8], index%8);
+    if (val == 1) {
+        set_bit_at_index(&vbitmap[index/8], index%8);
+    }
+    else if (val == 0) {
+        clear_bit_at_index(&vbitmap[index/8], index%8);
+    }
 }
 
 pde_t get_pd_entry(void *va) {
@@ -281,7 +274,7 @@ void *a_malloc(unsigned int num_bytes) {
             }
             page_map(pd, va, ppage);
         }
-        reserve_vpage(va);
+        change_vbitmap(va, 0);
     }
     __sync_lock_test_and_set(&flag, 0);
     return base_va;
@@ -293,7 +286,7 @@ void a_free(void *va, int size) {
     while (__sync_lock_test_and_set(&flag, 1) == 1) {
     }
     for (void *addr=va; addr < va+size; addr += PGSIZE) {
-        clear_vpage(addr);
+        change_vbitmap(addr, 0);
     }
     __sync_lock_test_and_set(&flag, 0);
 }

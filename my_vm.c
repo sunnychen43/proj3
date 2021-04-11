@@ -6,7 +6,7 @@
 #include <stdbool.h>
 
 #define ADDR_SIZE 4  // change when 32-bit
-#define VADDR_BASE 0x1000
+#define VADDR_BASE PGSIZE
 
 #define NUM_VPAGES      MAX_MEMSIZE/PGSIZE
 #define NUM_PPAGES      MEMSIZE/PGSIZE
@@ -340,16 +340,16 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer) {
 }
 
 
-int main() {
-    // a_malloc(PGSIZE*1024);
-    // int count = 0;
-    // for (int i=0; i < VPAGE_BITMAP_SIZE; i++) {
-    //     for (int j=0; j < 8; j++) {
-    //         if (get_bit_at_index(&pbitmap[i], j) == 1)
-    //             count++;
-    //     }
-    // }
-    // printf("%d\n", count);
+// int main() {
+//     // a_malloc(PGSIZE*1024);
+//     // int count = 0;
+//     // for (int i=0; i < VPAGE_BITMAP_SIZE; i++) {
+//     //     for (int j=0; j < 8; j++) {
+//     //         if (get_bit_at_index(&pbitmap[i], j) == 1)
+//     //             count++;
+//     //     }
+//     // }
+//     // printf("%d\n", count);
 
-    printf("%p\n", a_malloc(MEMSIZE));
-}
+//     printf("%p\n", a_malloc(MEMSIZE));
+// }

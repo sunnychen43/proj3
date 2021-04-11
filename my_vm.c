@@ -18,6 +18,7 @@
 #define OFFSET_BITS (int)log2(PGSIZE)
 #define PT_BITS (int)log2(PGSIZE/ADDR_SIZE)
 #define PD_BITS 32-PT_BITS-OFFSET_BITS
+#define TAG_BITS (int)log2(TLB_ENTRIES)
 
 
 
@@ -60,10 +61,9 @@ unsigned int get_low_bits(unsigned int value, int num_bits) {
     return value & ((1<<num_bits)-1);
 }
 
-static char *mem;
-static char *pbitmap, *vbitmap;
+static char *mem, *pbitmap, *vbitmap;
 static pde_t *pd;
-static pthread_mutex_t lock;
+static tlb_t tlb;
 static bool flag;
 
 void *find_next_ppage() {
@@ -81,22 +81,6 @@ void *find_next_ppage() {
     return NULL;
 }
 
-void *find_next_vaddr() {
-    for (int i=0; i < PPAGE_BITMAP_SIZE; i++) {
-        if (vbitmap[i] != 127) {
-            for (int j=0; j < 8; j++) {
-                if (get_bit_at_index(vbitmap+i, j) == 0) {
-                    // set_bit_at_index(vbitmap+i, j);
-                    size_t offset = PGSIZE * (i*8 + j);
-                    return (void *)(0ULL+offset+VADDR_BASE);
-                }
-            }
-        }
-    }
-    return NULL;
-}
-
-
 void set_physical_mem() {
     mem = mmap(NULL, MEMSIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
@@ -112,6 +96,39 @@ void set_physical_mem() {
 
     pd[0] = (pte_t)find_next_ppage();
     memset((void *)pd[0], 0, PGSIZE);
+
+    tlb.bins = malloc(sizeof(*tlb.bins) * TLB_ENTRIES);
+    for (int i=0; i < TLB_ENTRIES; i++) {
+        tlb.bins[i].addr = NULL;
+    }
+}
+
+
+int add_TLB(void *va, void *pa) {
+    unsigned long addr = (unsigned long)va - VADDR_BASE;
+    int tag = get_top_bits(addr, TAG_BITS);
+    int index = get_mid_bits(addr, 32-TAG_BITS-OFFSET_BITS, OFFSET_BITS);
+
+    tlb.bins[index].tag = tag;
+    tlb.bins[index].addr = (void*)((unsigned long)pa >> 12);
+
+    return 0;
+}
+
+
+void *check_TLB(void *va) {
+    unsigned long addr = (unsigned long)va - VADDR_BASE;
+    int tag = get_top_bits(addr, TAG_BITS);
+    int index = get_mid_bits(addr, 32-TAG_BITS-OFFSET_BITS, OFFSET_BITS);
+    int offset = get_low_bits(addr, OFFSET_BITS);
+
+    if (tlb.bins[index].addr != NULL && tlb.bins[index].tag == tag) {
+        void *pa = (void*)((unsigned long)tlb.bins[index].addr << 12) + offset;
+        return pa;
+    }
+    else {
+        return NULL;
+    }
 }
 
 
@@ -120,13 +137,21 @@ The function takes a virtual address and page directories starting address and
 performs translation to return the physical address
 */
 void *translate(pde_t *pgdir, void *va) {
-    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
     int offset = get_low_bits(addr, OFFSET_BITS);
 
-    pte_t *pt = (pte_t*)pd[pd_index];
-    return (void *)pt[pt_index]+offset; 
+    void *pa = check_TLB(va);
+    if (pa != NULL) {
+        return pa+offset;
+    }
+    else {
+        pte_t *pt = (pte_t*)pd[pd_index];
+        pa = (void*)pt[pt_index]+offset;
+        add_TLB(va, pa);
+        return pa; 
+    }
 }
 
 
@@ -137,7 +162,7 @@ directory to see if there is an existing mapping for a virtual address. If the
 virtual address is not present, then a new entry will be added
 */
 int page_map(pde_t *pgdir, void *va, void *pa) {
-    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
 
@@ -183,7 +208,7 @@ void *get_next_avail(int num_pages) {
 
 
 void reserve_vpage(void *va) {
-    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
 
@@ -194,7 +219,7 @@ void reserve_vpage(void *va) {
 }
 
 void clear_vpage(void *va) {
-    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
 
@@ -205,7 +230,7 @@ void clear_vpage(void *va) {
 }
 
 pde_t get_pd_entry(void *va) {
-    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
 
@@ -213,7 +238,7 @@ pde_t get_pd_entry(void *va) {
 }
 
 pte_t get_pt_entry(void *va) {
-    unsigned int addr = (unsigned int)va - VADDR_BASE;
+    unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
 
@@ -237,7 +262,7 @@ void *a_malloc(unsigned int num_bytes) {
     for (int i=0; i < num_pages; i++) {
         void *va = base_va+i*PGSIZE;
         if (get_pd_entry(va) == 0) {
-            unsigned int addr = (unsigned int)va - VADDR_BASE;
+            unsigned long addr = (unsigned long)va - VADDR_BASE;
             int pd_index = get_top_bits(addr, PD_BITS);
             pd[pd_index] = (pte_t)find_next_ppage();
             memset((void*)pd[pd_index], 0, PGSIZE);
@@ -313,14 +338,14 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer) {
 }
 
 
-int main() {
-    a_malloc(PGSIZE*1024);
-    int count = 0;
-    for (int i=0; i < VPAGE_BITMAP_SIZE; i++) {
-        for (int j=0; j < 8; j++) {
-            if (get_bit_at_index(&pbitmap[i], j) == 1)
-                count++;
-        }
-    }
-    printf("%d\n", count);
-}
+// int main() {
+//     a_malloc(PGSIZE*1024);
+//     int count = 0;
+//     for (int i=0; i < VPAGE_BITMAP_SIZE; i++) {
+//         for (int j=0; j < 8; j++) {
+//             if (get_bit_at_index(&pbitmap[i], j) == 1)
+//                 count++;
+//         }
+//     }
+//     printf("%d\n", count);
+// }

@@ -26,14 +26,14 @@ typedef unsigned long pde_t;
 #define TLB_ENTRIES 512
 
 //Structure to represents TLB
-typedef struct tlb {
-    int a;
-} tlb;
+typedef struct tlb_entry_t {
+    unsigned long tag;
+    void *addr;
+} tlb_entry_t;
 
-typedef struct block {
-    char *mem;
-    char *pbitmap;
-} block;
+typedef struct tlb_t {
+    tlb_entry_t *bins;
+} tlb_t;
 
 
 void set_physical_mem();

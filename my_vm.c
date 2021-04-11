@@ -5,6 +5,9 @@
 #include <pthread.h>
 #include <stdbool.h>
 
+#define MIN(a,b) (((a)<(b))?(a):(b))
+#define MAX(a,b) (((a)>(b))?(a):(b))
+
 #define ADDR_SIZE 4  // change when 32-bit
 #define VADDR_BASE PGSIZE
 
@@ -14,10 +17,9 @@
 #define PPAGE_BITMAP_SIZE NUM_PPAGES/8
 #define VPAGE_BITMAP_SIZE NUM_VPAGES/8
 
-#define OFFSET_BITS (int)log2(PGSIZE)
-#define PT_BITS (int)log2(PGSIZE/ADDR_SIZE)
-#define PD_BITS 32-PT_BITS-OFFSET_BITS
 #define TAG_BITS (int)log2(TLB_ENTRIES)
+
+static int PT_BITS, PD_BITS, OFFSET_BITS;
 
 
 
@@ -81,6 +83,10 @@ void *find_next_ppage() {
 }
 
 void set_physical_mem() {
+    OFFSET_BITS = (int)log2(PGSIZE);
+    PT_BITS = MIN(14, (int)log2(PGSIZE/ADDR_SIZE));
+    PD_BITS = 32-PT_BITS-OFFSET_BITS;
+
     mem = mmap(NULL, MEMSIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
     pbitmap = malloc(PPAGE_BITMAP_SIZE);
@@ -251,7 +257,7 @@ void *a_malloc(unsigned int num_bytes) {
         set_physical_mem();
     }
 
-    int num_pages = (int)ceil(num_bytes/PGSIZE);
+    int num_pages = (int)ceil((double)num_bytes/PGSIZE);
     void *base_va = get_next_avail(num_pages);
     for (int i=0; i < num_pages; i++) {
         void *va = base_va+i*PGSIZE;
@@ -274,7 +280,7 @@ void *a_malloc(unsigned int num_bytes) {
             }
             page_map(pd, va, ppage);
         }
-        change_vbitmap(va, 0);
+        change_vbitmap(va, 1);
     }
     __sync_lock_test_and_set(&flag, 0);
     return base_va;
@@ -351,5 +357,6 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer) {
 //     // }
 //     // printf("%d\n", count);
 
-//     printf("%p\n", a_malloc(MEMSIZE));
+//     a_malloc(1);
+//     printf("%d %d %d\n", PD_BITS, PT_BITS, OFFSET_BITS);
 // }

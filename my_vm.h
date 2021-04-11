@@ -9,7 +9,7 @@
 
 //Add any important includes here which you may need
 
-#define PGSIZE 4096
+#define PGSIZE (4096*16)
 
 // Maximum size of virtual memory
 #define MAX_MEMSIZE (4ULL*1024*1024*1024)

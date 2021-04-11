@@ -9,7 +9,7 @@
 
 //Add any important includes here which you may need
 
-#define PGSIZE 4096
+#define PGSIZE (2048)
 
 // Maximum size of virtual memory
 #define MAX_MEMSIZE (4ULL*1024*1024*1024)
@@ -34,6 +34,11 @@ typedef struct tlb_entry_t {
 typedef struct tlb_t {
     tlb_entry_t *bins;
 } tlb_t;
+
+typedef struct vbitmap_t {
+    char *bitmap;
+    size_t size;
+} vbitmap_t;
 
 
 void set_physical_mem();

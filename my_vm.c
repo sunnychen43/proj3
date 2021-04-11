@@ -5,10 +5,8 @@
 #include <pthread.h>
 #include <stdbool.h>
 
-#define max(a,b) \
-    ({ __typeof__ (a) _a = (a); \
-        __typeof__ (b) _b = (b); \
-        _a > _b ? _a : _b; })
+#define MIN(a,b) (((a)<(b))?(a):(b))
+#define MAX(a,b) (((a)>(b))?(a):(b))
 
 #define ADDR_SIZE sizeof(void*)  // change when 32-bit
 #define VADDR_BASE PGSIZE
@@ -19,10 +17,9 @@
 #define PPAGE_BITMAP_SIZE NUM_PPAGES/8
 #define VPAGE_BITMAP_SIZE PPAGE_BITMAP_SIZE*2
 
-#define OFFSET_BITS (int)log2(PGSIZE)
-#define PT_BITS (int)log2(PGSIZE/ADDR_SIZE)
-#define PD_BITS 64-PT_BITS*3-OFFSET_BITS
 #define TLB_INDEX_BITS (int)log2(TLB_ENTRIES)
+
+static int OFFSET_BITS, PT_BITS, PD_BITS;
 
 void set_bit_at_index(char *bitmap, int index) {
     *bitmap |= (1 << index);
@@ -64,7 +61,8 @@ unsigned int get_low_bits(unsigned int value, int num_bits) {
 }
 
 static char *mem, *vbitmap, *pbitmap;
-static pde_t *pd;
+static pde_t **pd;
+static int pd_size;
 static tlb_t tlb;
 static bool flag;
 
@@ -85,6 +83,10 @@ void *find_next_ppage() {
 }
 
 void set_physical_mem() {
+    OFFSET_BITS = (int)log2(PGSIZE);
+    PT_BITS = (int)log2(PGSIZE/ADDR_SIZE);
+    PD_BITS = 64-PT_BITS*3-OFFSET_BITS;
+
     mem = mmap(NULL, MEMSIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
     pbitmap = malloc(PPAGE_BITMAP_SIZE);
@@ -93,14 +95,15 @@ void set_physical_mem() {
     memset(vbitmap, 0, VPAGE_BITMAP_SIZE);
 
     // reserve one page for pd
-    pd = find_next_ppage();
-    find_next_ppage();
-    find_next_ppage();
-    printf("%d %d\n", PD_BITS, (int)pow(2, PD_BITS));
-    memset(pd, 0, (int)pow(2, PD_BITS)*ADDR_SIZE);
+    pd = malloc(sizeof(*pd));
+    pd_size = 1;
 
-    pd[0] = (pte_t)find_next_ppage();
-    memset((void *)pd[0], 0, PGSIZE);
+
+    pd[0] = find_next_ppage();
+    memset(pd[0], 0, PGSIZE);
+
+    pd[0][0] = (pte_t)find_next_ppage();
+    memset((void *)pd[0][0], 0, PGSIZE);
 
     tlb.bins = malloc(sizeof(*tlb.bins) * TLB_ENTRIES);
     for (int i=0; i < TLB_ENTRIES; i++) {
@@ -367,8 +370,5 @@ int main() {
 
 
     printf("%p\n", a_malloc(5000));
-    printf("%p\n", a_malloc(5000));
-    printf("%p\n", a_malloc(5000));
-    printf("%d\n", PD_BITS);
-    print_bitmap(pbitmap);
+    printf("%d %d %d\n", PD_BITS, PT_BITS, OFFSET_BITS);
 }

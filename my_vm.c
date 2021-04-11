@@ -5,12 +5,11 @@
 #include <pthread.h>
 #include <stdbool.h>
 
-#define ADDR_SIZE 8  // change when 32-bit
-#define VADDR_BASE 0x3000
+#define ADDR_SIZE 4  // change when 32-bit
+#define VADDR_BASE 0x1000
 
 #define NUM_VPAGES      MAX_MEMSIZE/PGSIZE
 #define NUM_PPAGES      MEMSIZE/PGSIZE
-#define NUM_BLOCKS      MAX_MEMSIZE/MEMSIZE  //4
 
 #define PPAGE_BITMAP_SIZE NUM_PPAGES/8
 #define VPAGE_BITMAP_SIZE NUM_VPAGES/8
@@ -67,8 +66,9 @@ static tlb_t tlb;
 static bool flag;
 
 void *find_next_ppage() {
+    count++;
     for (int i=0; i < PPAGE_BITMAP_SIZE; i++) {
-        if (pbitmap[i] != 127) {
+        if (pbitmap[i] != ~0) {
             for (int j=0; j < 8; j++) {
                 if (get_bit_at_index(pbitmap+i, j) == 0) {
                     set_bit_at_index(pbitmap+i, j);
@@ -89,9 +89,9 @@ void set_physical_mem() {
     vbitmap = malloc(VPAGE_BITMAP_SIZE);
     memset(vbitmap, 0, VPAGE_BITMAP_SIZE);
 
-    // reserve two pages for pd
+    // reserve one page for pd
     pd = find_next_ppage();
-    find_next_ppage();
+    // find_next_ppage();
     memset(pd, 0, (int)pow(2, PD_BITS)*ADDR_SIZE);
 
     pd[0] = (pte_t)find_next_ppage();
@@ -175,12 +175,13 @@ int page_map(pde_t *pgdir, void *va, void *pa) {
     }
 
     pte_t *pt = (pte_t*)pd[pd_index];
-    if (pt == NULL) {
-        
+    if (pt != NULL) {
+        pt[pt_index] = (pte_t)pa;
+        return 0;
     }
-    pt[pt_index] = (pte_t)pa;
-
-    return 0;
+    else {
+        return 1;
+    }
 }
 
 
@@ -257,23 +258,31 @@ void *a_malloc(unsigned int num_bytes) {
         set_physical_mem();
     }
 
-    int num_pages = ceil((double)num_bytes/PGSIZE);
+    int num_pages = (int)ceil(num_bytes/PGSIZE);
     void *base_va = get_next_avail(num_pages);
     for (int i=0; i < num_pages; i++) {
         void *va = base_va+i*PGSIZE;
         if (get_pd_entry(va) == 0) {
+            void *ppage = find_next_ppage();
+            if (ppage == NULL) {
+                printf("Mem fulla\n");
+                return NULL;
+            }
             unsigned long addr = (unsigned long)va - VADDR_BASE;
             int pd_index = get_top_bits(addr, PD_BITS);
-            pd[pd_index] = (pte_t)find_next_ppage();
+            pd[pd_index] = (pte_t)ppage;
             memset((void*)pd[pd_index], 0, PGSIZE);
         }
         if (get_pt_entry(va) == 0) {
-            void *page = find_next_ppage();
-            page_map(pd, va, page);
+            void *ppage = find_next_ppage();
+            if (ppage == NULL) {
+                printf("Mem fullb\n");
+                return NULL;
+            }
+            page_map(pd, va, ppage);
         }
         reserve_vpage(va);
     }
-
     __sync_lock_test_and_set(&flag, 0);
     return base_va;
 }
@@ -338,14 +347,16 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer) {
 }
 
 
-// int main() {
-//     a_malloc(PGSIZE*1024);
-//     int count = 0;
-//     for (int i=0; i < VPAGE_BITMAP_SIZE; i++) {
-//         for (int j=0; j < 8; j++) {
-//             if (get_bit_at_index(&pbitmap[i], j) == 1)
-//                 count++;
-//         }
-//     }
-//     printf("%d\n", count);
-// }
+int main() {
+    // a_malloc(PGSIZE*1024);
+    // int count = 0;
+    // for (int i=0; i < VPAGE_BITMAP_SIZE; i++) {
+    //     for (int j=0; j < 8; j++) {
+    //         if (get_bit_at_index(&pbitmap[i], j) == 1)
+    //             count++;
+    //     }
+    // }
+    // printf("%d\n", count);
+
+    printf("%p\n", a_malloc(MEMSIZE));
+}

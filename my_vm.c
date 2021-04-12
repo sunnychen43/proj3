@@ -109,6 +109,7 @@ void *find_next_page() {
 
 /******** TLB Functions ********/
 
+static int miss, access;
 /*
  * Stores a mapping from va -> pa in the tlb. Since this is an internal
  * function (can only be called within my_vm.c), assumes that va is a valid
@@ -119,6 +120,7 @@ int add_TLB(void *va, void *pa) {
     int tag = get_top_bits(addr, TAG_BITS);
     int index = get_mid_bits(addr, 32-TAG_BITS-OFFSET_BITS, OFFSET_BITS);
 
+    miss++;
     tlb.bins[index].tag = tag;
     tlb.bins[index].addr = (void*)((unsigned long)pa >> OFFSET_BITS);
 
@@ -136,6 +138,7 @@ void *check_TLB(void *va) {
     int index = get_mid_bits(addr, 32-TAG_BITS-OFFSET_BITS, OFFSET_BITS);
     int offset = get_low_bits(addr, OFFSET_BITS);  // page offset
 
+    access++;
     // check if tlb entry is valid and tag matches
     if (tlb.bins[index].addr != NULL && tlb.bins[index].tag == tag) { 
         // addresses are stored w/o offset so we need to include it
@@ -147,6 +150,10 @@ void *check_TLB(void *va) {
     }
 }
 
+void print_TLB_missrate() {
+    double miss_rate = (double)miss / access;
+    fprintf(stderr, "TLB miss rate %lf \n", miss_rate);
+}
 
 /******** Virtual Mem Functions ********/
 

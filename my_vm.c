@@ -199,7 +199,8 @@ void set_vbitmap(char *bitmap, void *va, int val) {
  * Translates a virtual address to a physical address. First checks the tlb 
  * to see if a mapping exists there. If there is, return the address from 
  * tlb. Otherwise, go through the page table and find the physical address, 
- * return it and add mapping to tlb.
+ * return it and add mapping to tlb. Returns NULL if va has not been mapped
+ * to an address.
  */
 void *translate(pde_t *pgdir, void *va) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
@@ -215,7 +216,11 @@ void *translate(pde_t *pgdir, void *va) {
     else {
         miss++;
         pte_t *pt = (pte_t*)pd[pd_index];
+        if (pt == NULL)
+            return NULL;
         pa = (void*)pt[pt_index];
+        if (pa == NULL)
+            return NULL;
         add_TLB(va, pa);
         return pa+offset; 
     }

@@ -28,7 +28,7 @@ void *find_next_page();
 int add_TLB(void *va, void *pa);
 void *check_TLB(void *va);
 
-void set_bitmap(char *bitmap, void *va, int val);
+void set_vbitmap(char *bitmap, void *va, int val);
 void *translate(pde_t *pgdir, void *va);
 int page_map(pde_t *pgdir, void *va, void* pa);
 
@@ -108,6 +108,18 @@ void *find_next_page() {
     return NULL;
 }
 
+void set_pbitmap(char *bitmap, void *pa, int val) {
+    unsigned long offset = (unsigned long)(pa - (void*)mem);
+    unsigned long index = offset >> OFFSET_BITS;
+    
+    if (val == 1) {
+        set_bit_at_index(&bitmap[index/8], index%8);
+    }
+    else if (val == 0) {
+        clear_bit_at_index(&bitmap[index/8], index%8);
+    }
+}
+
 
 /********** TLB Functions **********/
 
@@ -164,7 +176,7 @@ void print_TLB_missrate() {
  * val. Assume that bitmap is a valid virtual bitmap with the correct
  * size.
  */
-void set_bitmap(char *bitmap, void *va, int val) {
+void set_vbitmap(char *bitmap, void *va, int val) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
@@ -295,7 +307,7 @@ void *a_malloc(unsigned int num_bytes) {
             }
             page_map(pd, va, ppage);
         }
-        set_bitmap(vbitmap, va, 1);
+        set_vbitmap(vbitmap, va, 1);
     }
 
     __sync_lock_test_and_set(&flag, 0);
@@ -308,7 +320,10 @@ void a_free(void *va, int size) {
     while (__sync_lock_test_and_set(&flag, 1) == 1) {
     }
     for (void *addr=va; addr < va+size; addr += PGSIZE) {
-        set_bitmap(vbitmap, addr, 0);  // mark page as free in bitmap
+        void *pa = translate(pd, addr);
+        page_map(pd, va, NULL);
+        set_pbitmap(pbitmap, pa, 0);
+        set_vbitmap(vbitmap, addr, 0);
     }
     __sync_lock_test_and_set(&flag, 0);
 }

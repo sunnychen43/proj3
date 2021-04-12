@@ -237,13 +237,25 @@ int page_map(pde_t *pgdir, void *va, void *pa) {
     int pd_index = get_top_bits(addr, PD_BITS);
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
 
-    int pte_per_page = PGSIZE / ADDR_SIZE;
-    int index = pd_index * pte_per_page + pt_index;
-    
+    if (pd[pd_index] == 0) {
+        void *page = find_next_page();
+        if (page == NULL) {
+            printf("PDE allocation failed\n");
+            return 1;
+        }
+        pd[pd_index] = (pde_t)page;
+    }
+
+    pte_t *pt = (pte_t*)pd[pd_index];
+    if (pt[pt_index] != 0) {
+        printf("Mapping already exists\n");
+        return 1;
+    }
+
+    int index = addr >> OFFSET_BITS;
     int bit = get_bit_at_index(&vbitmap[index/8], index%8);
     if (bit == 1 || pd[pd_index] == 0)
         return 1;
-
     pte_t *pt = (pte_t*)pd[pd_index];
     pt[pt_index] = (pte_t)pa;
     return 0;
@@ -299,27 +311,10 @@ void *a_malloc(unsigned int num_bytes) {
     }
     for (int i=0; i < num_pages; i++) {
         void *va = base_va+i*PGSIZE;
-        unsigned long addr = (unsigned long)va-VADDR_BASE;
-
-        int pd_index = get_top_bits(addr, PD_BITS);
-        if (pd[pd_index] == 0) {
-            void *ppage = find_next_page();
-            if (ppage == NULL) {
-                printf("PDE allocation failed\n");
-                return NULL;
-            }
-            pd[pd_index] = (pde_t)ppage;
-        }
-
-        pte_t *pt = (pte_t*)pd[pd_index];
-        int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
-        if (pt[pt_index] == 0) {
-            void *ppage = find_next_page();
-            if (ppage == NULL) {
-                printf("PTE allocation failed\n");
-                return NULL;
-            }
-            page_map(pd, va, ppage);
+        void *page = find_next_page();
+        if (page_map(pd, va, page) == 1) {
+            printf("Malloc failed\n");
+            return NULL;
         }
         set_vbitmap(vbitmap, va, 1);
     }

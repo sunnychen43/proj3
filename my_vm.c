@@ -40,7 +40,6 @@ static pde_t *pd;
 static tlb_t tlb;
 static bool  flag;
 
-
 void print_bitmap(char *bitmap) {
     for (int i=0; i < 8; i++) {
         printf("%d", get_bit_at_index(bitmap, i));
@@ -56,7 +55,6 @@ void print_bitmap(char *bitmap) {
  * is structured and initializes physical mem, tlb, bitmaps, and page dir.
  */
 void set_physical_mem() {
-
     /* Define how the bits in addr index into page table */
     OFFSET_BITS = (int)log2(PGSIZE);
     PT_BITS = MIN(14, (int)log2(PGSIZE/ADDR_SIZE));
@@ -79,14 +77,12 @@ void set_physical_mem() {
 
     memset(pd, 0, (int)pow(2, PD_BITS)*ADDR_SIZE);
 
-
     /* Initialize tlb */
     tlb.bins = malloc(sizeof(*tlb.bins) * TLB_ENTRIES);
     for (int i=0; i < TLB_ENTRIES; i++) {
         tlb.bins[i].addr = NULL;  // addr == NULL means tlb entry isn't valid
     }
 }
-
 
 /* 
  * Scans physical bitmap for an avaliable page. If a page is found,
@@ -95,8 +91,12 @@ void set_physical_mem() {
  */
 void *find_next_page() {
     for (int i=0; i < PPAGE_BITMAP_SIZE; i++) {
-        if (pbitmap[i] != ~0) {  // pbitmap[i] == ~0 if all bits are set to 1
-            for (int j=0; j < 8; j++) {
+
+        /* Instead of checking bit by bit, we can check the value of
+        each element in pbitmap. If pbitmap[i] == ~0, that means all
+        bits are set to 1 and we can skip it.*/
+        if (pbitmap[i] != ~0) {
+            for (int j=0; j < 8; j++) {  // go through each bit
                 if (get_bit_at_index(pbitmap+i, j) == 0) {
                     set_bit_at_index(pbitmap+i, j);
                     size_t offset = PGSIZE * (i*8 + j);  // offset from main mem ptr
@@ -109,7 +109,7 @@ void *find_next_page() {
 }
 
 
-/******** TLB Functions ********/
+/********** TLB Functions **********/
 
 static int miss, access;
 /*
@@ -128,7 +128,6 @@ int add_TLB(void *va, void *pa) {
 
     return 0;
 }
-
 
 /*
  * Searches TLB to see if there is an existing mapping for va. Returns
@@ -157,7 +156,8 @@ void print_TLB_missrate() {
     fprintf(stderr, "TLB miss rate %lf \n", miss_rate);
 }
 
-/******** Virtual Mem Functions ********/
+
+/********** Virtual Mem Functions **********/
 
 /*
  * Finds the corresponding bit to virtual address `va` and sets it to
@@ -179,7 +179,6 @@ void set_bitmap(char *bitmap, void *va, int val) {
         clear_bit_at_index(&bitmap[index/8], index%8);
     }
 }
-
 
 /*
  * Translates a virtual address to a physical address. First checks the tlb 
@@ -205,7 +204,6 @@ void *translate(pde_t *pgdir, void *va) {
     }
 }
 
-
 /*
  * This function will walk the page dir to see if there is an existing 
  * mapping for a virtual address. If the virtual address is not present, 
@@ -228,7 +226,6 @@ int page_map(pde_t *pgdir, void *va, void *pa) {
     pt[pt_index] = (pte_t)pa;
     return 0;
 }
-
 
 /*
  * Searchs virtual bitmap for a set of contiguous avaliable virtual addresses 
@@ -316,7 +313,6 @@ void a_free(void *va, int size) {
     __sync_lock_test_and_set(&flag, 0);
 }
 
-
 /* The function copies data pointed by "val" to physical
  * memory pages using virtual address (va)
 */
@@ -344,7 +340,6 @@ void put_value(void *va, void *val, int size) {
     }
 }
 
-
 /*Given a virtual address, this function copies the contents of the page to val*/
 void get_value(void *va, void *val, int size) {
     void *base = (void*)((unsigned long)va >> OFFSET_BITS << OFFSET_BITS);
@@ -367,8 +362,6 @@ void get_value(void *va, void *val, int size) {
         memcpy(val+bytes_copied, translate(pd, va+bytes_copied), size-bytes_copied);
     }
 }
-
-
 
 /*
 This function receives two matrices mat1 and mat2 as an argument with size

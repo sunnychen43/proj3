@@ -17,14 +17,10 @@
 // Size of "physcial memory"
 #define MEMSIZE (1ULL*1024*1024*1024)
 
-// Represents a page table entry
 typedef unsigned long pte_t;
-
-// Represents a page directory entry
 typedef unsigned long pde_t;
 
 #define TLB_ENTRIES 1024
-
 //Structure to represents TLB
 typedef struct tlb_entry_t {
     unsigned long tag;
@@ -34,7 +30,6 @@ typedef struct tlb_entry_t {
 typedef struct tlb_t {
     tlb_entry_t *bins;
 } tlb_t;
-
 
 
 void *a_malloc(unsigned int num_bytes);

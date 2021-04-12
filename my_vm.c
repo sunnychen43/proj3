@@ -65,6 +65,7 @@ unsigned int get_low_bits(unsigned int value, int num_bits) {
 
 static char *mem, *vbitmap, *pbitmap;
 static pde_t *pd;
+static int pd_size;
 static tlb_t tlb;
 static bool flag;
 
@@ -94,8 +95,7 @@ void set_physical_mem() {
 
     // reserve one page for pd
     pd = find_next_ppage();
-    find_next_ppage();
-    find_next_ppage();
+    
     printf("%d %d\n", PD_BITS, (int)pow(2, PD_BITS));
     memset(pd, 0, (int)pow(2, PD_BITS)*ADDR_SIZE);
 

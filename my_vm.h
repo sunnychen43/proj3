@@ -9,13 +9,13 @@
 
 //Add any important includes here which you may need
 
-#define PGSIZE (4096*16)
+#define PGSIZE (4096)
 
 // Maximum size of virtual memory
 #define MAX_MEMSIZE (4ULL*1024*1024*1024)
 
 // Size of "physcial memory"
-#define MEMSIZE (1024*1024*1024)
+#define MEMSIZE (1ULL*1024*1024*1024)
 
 // Represents a page table entry
 typedef unsigned long pte_t;
@@ -23,7 +23,7 @@ typedef unsigned long pte_t;
 // Represents a page directory entry
 typedef unsigned long pde_t;
 
-#define TLB_ENTRIES 512
+#define TLB_ENTRIES 1024
 
 //Structure to represents TLB
 typedef struct tlb_entry_t {
@@ -36,11 +36,7 @@ typedef struct tlb_t {
 } tlb_t;
 
 
-void set_physical_mem();
-void *translate(pde_t *pgdir, void *va);
-int page_map(pde_t *pgdir, void *va, void* pa);
-bool check_in_tlb(void *va);
-void put_in_tlb(void *va, void *pa);
+
 void *a_malloc(unsigned int num_bytes);
 void a_free(void *va, int size);
 void put_value(void *va, void *val, int size);

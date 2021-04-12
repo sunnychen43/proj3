@@ -1,4 +1,5 @@
 #include "my_vm.h"
+#include "bit.h"
 #include <math.h>
 #include <sys/mman.h>
 #include <string.h>
@@ -8,33 +9,36 @@
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
 
-#define ADDR_SIZE 4  // change when 32-bit
-#define VADDR_BASE PGSIZE
 
-#define NUM_VPAGES      MAX_MEMSIZE/PGSIZE
-#define NUM_PPAGES      MEMSIZE/PGSIZE
+/********** Local Constants and Defs **********/
 
-#define PPAGE_BITMAP_SIZE NUM_PPAGES/8
-#define VPAGE_BITMAP_SIZE NUM_VPAGES/8
+#define ADDR_SIZE           sizeof(void*)
+#define VADDR_BASE          PGSIZE  
+#define PPAGE_BITMAP_SIZE   (MEMSIZE/PGSIZE/8)
+#define VPAGE_BITMAP_SIZE   (MAX_MEMSIZE/PGSIZE/8)
 
-#define TAG_BITS (int)log2(TLB_ENTRIES)
-
-static int PD_BITS, PT_BITS, OFFSET_BITS;
+static int PD_BITS, PT_BITS, OFFSET_BITS, TAG_BITS;
 
 
+/********** Local Function Definitions **********/
 
-void set_bit_at_index(char *bitmap, int index) {
-    *bitmap |= (1 << index);
-}
+void set_physical_mem();
+void *find_next_page();
 
-void clear_bit_at_index(char *bitmap, int index) {
-    *bitmap &= ~(1 << index);
-}
+int add_TLB(void *va, void *pa);
+void *check_TLB(void *va);
+
+void set_bitmap(char *bitmap, void *va, int val);
+void *translate(pde_t *pgdir, void *va);
+int page_map(pde_t *pgdir, void *va, void* pa);
 
 
-int get_bit_at_index(char *bitmap, int index) {
-    return (*bitmap >> index) & 1;
-}
+/********** Static Variable Definitions **********/
+
+static char *mem, *pbitmap, *vbitmap;
+static pde_t *pd;
+static tlb_t tlb;
+static bool  flag;
 
 
 void print_bitmap(char *bitmap) {
@@ -44,51 +48,25 @@ void print_bitmap(char *bitmap) {
     printf("\n");
 }
 
-unsigned int get_top_bits(unsigned int value, int num_bits) {
-    int num_bits_to_prune = 32 - num_bits; //32 assuming we are using 32-bit address 
-    return (value >> num_bits_to_prune);
-}
 
-unsigned int get_mid_bits(unsigned int value, int num_middle_bits, int num_lower_bits) {
-    unsigned int mid_bits_value = 0;   
-    value = value >> num_lower_bits; 
-    unsigned int outer_bits_mask =   (1 << num_middle_bits);  
-    outer_bits_mask = outer_bits_mask-1;
-    mid_bits_value = value & outer_bits_mask;
-    return mid_bits_value;
-}
+/********** Physical Mem Functions **********/
 
-unsigned int get_low_bits(unsigned int value, int num_bits) {
-    return value & ((1<<num_bits)-1);
-}
-
-static char *mem, *pbitmap, *vbitmap;
-static pde_t *pd;
-static tlb_t tlb;
-static bool flag;
-
-void *find_next_ppage() {
-    for (int i=0; i < PPAGE_BITMAP_SIZE; i++) {
-        if (pbitmap[i] != ~0) {
-            for (int j=0; j < 8; j++) {
-                if (get_bit_at_index(pbitmap+i, j) == 0) {
-                    set_bit_at_index(pbitmap+i, j);
-                    size_t offset = PGSIZE * (i*8 + j);
-                    return mem+offset;
-                }
-            }
-        }
-    }
-    return NULL;
-}
-
+/* 
+ * Startup function called the first time a_malloc() is run. Defines how page table
+ * is structured and initializes physical mem, tlb, bitmaps, and page dir.
+ */
 void set_physical_mem() {
+
+    /* Define how the bits in addr index into page table */
     OFFSET_BITS = (int)log2(PGSIZE);
     PT_BITS = MIN(14, (int)log2(PGSIZE/ADDR_SIZE));
     PD_BITS = 32-PT_BITS-OFFSET_BITS;
+    TAG_BITS = (int)log2(TLB_ENTRIES);
 
+    /* Initialize main mem */
     mem = mmap(NULL, MEMSIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
+    /* Initialize bitmaps */
     pbitmap = malloc(PPAGE_BITMAP_SIZE);
     memset(pbitmap, 0, PPAGE_BITMAP_SIZE);
     vbitmap = malloc(VPAGE_BITMAP_SIZE);
@@ -101,48 +79,114 @@ void set_physical_mem() {
 
     memset(pd, 0, (int)pow(2, PD_BITS)*ADDR_SIZE);
 
-    pd[0] = (pte_t)find_next_ppage();
-    memset((void *)pd[0], 0, PGSIZE);
 
+    /* Initialize tlb */
     tlb.bins = malloc(sizeof(*tlb.bins) * TLB_ENTRIES);
     for (int i=0; i < TLB_ENTRIES; i++) {
-        tlb.bins[i].addr = NULL;
+        tlb.bins[i].addr = NULL;  // addr == NULL means tlb entry isn't valid
     }
 }
 
 
+/* 
+ * Scans physical bitmap for an avaliable page. If a page is found,
+ * return physical address of the page. Otherwise if all pages are
+ * in use, return NULL
+ */
+void *find_next_page() {
+    for (int i=0; i < PPAGE_BITMAP_SIZE; i++) {
+        if (pbitmap[i] != ~0) {  // pbitmap[i] == ~0 if all bits are set to 1
+            for (int j=0; j < 8; j++) {
+                if (get_bit_at_index(pbitmap+i, j) == 0) {
+                    set_bit_at_index(pbitmap+i, j);
+                    size_t offset = PGSIZE * (i*8 + j);  // offset from main mem ptr
+                    return mem+offset;
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+
+/******** TLB Functions ********/
+
+static int miss, access;
+/*
+ * Stores a mapping from va -> pa in the tlb. Since this is an internal
+ * function (can only be called within my_vm.c), assumes that va is a valid
+ * virtual address within bounds.
+ */
 int add_TLB(void *va, void *pa) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
     int tag = get_top_bits(addr, TAG_BITS);
     int index = get_mid_bits(addr, 32-TAG_BITS-OFFSET_BITS, OFFSET_BITS);
 
+    miss++;
     tlb.bins[index].tag = tag;
-    tlb.bins[index].addr = (void*)((unsigned long)pa >> 12);
+    tlb.bins[index].addr = (void*)((unsigned long)pa >> OFFSET_BITS);
 
     return 0;
 }
 
 
+/*
+ * Searches TLB to see if there is an existing mapping for va. Returns
+ * the physical address if there is, otherwise return NULL.
+ */
 void *check_TLB(void *va) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
     int tag = get_top_bits(addr, TAG_BITS);
     int index = get_mid_bits(addr, 32-TAG_BITS-OFFSET_BITS, OFFSET_BITS);
-    int offset = get_low_bits(addr, OFFSET_BITS);
+    int offset = get_low_bits(addr, OFFSET_BITS);  // page offset
 
-    if (tlb.bins[index].addr != NULL && tlb.bins[index].tag == tag) {
-        void *pa = (void*)((unsigned long)tlb.bins[index].addr << 12) + offset;
+    access++;
+    // check if tlb entry is valid and tag matches
+    if (tlb.bins[index].addr != NULL && tlb.bins[index].tag == tag) { 
+        // addresses are stored w/o offset so we need to include it
+        void *pa = (void*)((unsigned long)tlb.bins[index].addr << OFFSET_BITS) + offset;
         return pa;
     }
     else {
-        return NULL;
+        return NULL;  // tlb entry invalid or tag mismatch
+    }
+}
+
+void print_TLB_missrate() {
+    double miss_rate = (double)miss / access;
+    fprintf(stderr, "TLB miss rate %lf \n", miss_rate);
+}
+
+/******** Virtual Mem Functions ********/
+
+/*
+ * Finds the corresponding bit to virtual address `va` and sets it to
+ * val. Assume that bitmap is a valid virtual bitmap with the correct
+ * size.
+ */
+void set_bitmap(char *bitmap, void *va, int val) {
+    unsigned long addr = (unsigned long)va - VADDR_BASE;
+    int pd_index = get_top_bits(addr, PD_BITS);
+    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
+
+    int pte_per_page = PGSIZE / ADDR_SIZE;
+    int index = pd_index * pte_per_page + pt_index;
+    
+    if (val == 1) {
+        set_bit_at_index(&bitmap[index/8], index%8);  // bitmap is an array of chars, so 8 bits in each index
+    }
+    else if (val == 0) {
+        clear_bit_at_index(&bitmap[index/8], index%8);
     }
 }
 
 
 /*
-The function takes a virtual address and page directories starting address and
-performs translation to return the physical address
-*/
+ * Translates a virtual address to a physical address. First checks the tlb 
+ * to see if a mapping exists there. If there is, return the address from 
+ * tlb. Otherwise, go through the page table and find the physical address, 
+ * return it and add mapping to tlb.
+ */
 void *translate(pde_t *pgdir, void *va) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
@@ -163,11 +207,11 @@ void *translate(pde_t *pgdir, void *va) {
 
 
 /*
-The function takes a page directory address, virtual address, physical address
-as an argument, and sets a page table entry. This function will walk the page
-directory to see if there is an existing mapping for a virtual address. If the
-virtual address is not present, then a new entry will be added
-*/
+ * This function will walk the page dir to see if there is an existing 
+ * mapping for a virtual address. If the virtual address is not present, 
+ * returns 1 and a new mapping will be made. Otherwise returns 0 and does 
+ * nothing.
+ */
 int page_map(pde_t *pgdir, void *va, void *pa) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
@@ -177,24 +221,21 @@ int page_map(pde_t *pgdir, void *va, void *pa) {
     int index = pd_index * pte_per_page + pt_index;
     
     int bit = get_bit_at_index(&vbitmap[index/8], index%8);
-    if (bit == 1) {
-        return -1;
-    }
+    if (bit == 1 || pd[pd_index] == 0)
+        return 1;
 
     pte_t *pt = (pte_t*)pd[pd_index];
-    if (pt != NULL) {
-        pt[pt_index] = (pte_t)pa;
-        return 0;
-    }
-    else {
-        return 1;
-    }
+    pt[pt_index] = (pte_t)pa;
+    return 0;
 }
 
 
-/*Function that gets the next available page
-*/
-void *get_next_avail(int num_pages) {
+/*
+ * Searchs virtual bitmap for a set of contiguous avaliable virtual addresses 
+ * that can hold the given number of pages. If a set is found, return the 
+ * lowest virtual address that's free in the set. Otherwise, return NULL.
+ */
+void *find_next_addr(int num_pages) {
     int count = 0;
     for (int i=0; i < VPAGE_BITMAP_SIZE; i++) {
         for (int j=0; j < 8; j++) {
@@ -215,75 +256,51 @@ void *get_next_avail(int num_pages) {
 }
 
 
-void change_vbitmap(void *va, int val) {
-    unsigned long addr = (unsigned long)va - VADDR_BASE;
-    int pd_index = get_top_bits(addr, PD_BITS);
-    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
+/********** Public Functions **********/
 
-    int pte_per_page = PGSIZE / ADDR_SIZE;
-    int index = pd_index * pte_per_page + pt_index;
-    
-    if (val == 1) {
-        set_bit_at_index(&vbitmap[index/8], index%8);
-    }
-    else if (val == 0) {
-        clear_bit_at_index(&vbitmap[index/8], index%8);
-    }
-}
-
-pde_t get_pd_entry(void *va) {
-    unsigned long addr = (unsigned long)va - VADDR_BASE;
-    int pd_index = get_top_bits(addr, PD_BITS);
-    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
-
-    return pd[pd_index];
-}
-
-pte_t get_pt_entry(void *va) {
-    unsigned long addr = (unsigned long)va - VADDR_BASE;
-    int pd_index = get_top_bits(addr, PD_BITS);
-    int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
-
-    pte_t *pt = (pte_t*)pd[pd_index];
-    return pt[pt_index];
-}
-
-/* Function responsible for allocating pages
-and used by the benchmark
-*/
+/* 
+ * Memory allocation function. Given a number of bytes, tries to find room 
+ * to allocate in the virtual address space. If there is room, create mappings 
+ * for virtual addresses to physical pages and return the virtual address. 
+ * Will always return the lowest valid virtual address. If there's no room, 
+ * return NULL.
+ */
 void *a_malloc(unsigned int num_bytes) {
     while (__sync_lock_test_and_set(&flag, 1) == 1) {
     }
 
-    if (mem == NULL) {
+    if (mem == NULL)
         set_physical_mem();
-    }
 
     int num_pages = (int)ceil((double)num_bytes/PGSIZE);
-    void *base_va = get_next_avail(num_pages);
+    void *base_va = find_next_addr(num_pages);
     for (int i=0; i < num_pages; i++) {
         void *va = base_va+i*PGSIZE;
-        if (get_pd_entry(va) == 0) {
-            void *ppage = find_next_ppage();
+        unsigned long addr = (unsigned long)va-VADDR_BASE;
+
+        int pd_index = get_top_bits(addr, PD_BITS);
+        if (pd[pd_index] == 0) {
+            void *ppage = find_next_page();
             if (ppage == NULL) {
-                printf("Mem fulla\n");
+                printf("PDE allocation failed\n");
                 return NULL;
             }
-            unsigned long addr = (unsigned long)va - VADDR_BASE;
-            int pd_index = get_top_bits(addr, PD_BITS);
-            pd[pd_index] = (pte_t)ppage;
-            memset((void*)pd[pd_index], 0, PGSIZE);
+            pd[pd_index] = (pde_t)ppage;
         }
-        if (get_pt_entry(va) == 0) {
-            void *ppage = find_next_ppage();
+
+        pte_t *pt = (pte_t*)pd[pd_index];
+        int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
+        if (pt[pt_index] == 0) {
+            void *ppage = find_next_page();
             if (ppage == NULL) {
-                printf("Mem fullb\n");
+                printf("PTE allocation failed\n");
                 return NULL;
             }
             page_map(pd, va, ppage);
         }
-        change_vbitmap(va, 1);
+        set_bitmap(vbitmap, va, 1);
     }
+
     __sync_lock_test_and_set(&flag, 0);
     return base_va;
 }
@@ -294,7 +311,7 @@ void a_free(void *va, int size) {
     while (__sync_lock_test_and_set(&flag, 1) == 1) {
     }
     for (void *addr=va; addr < va+size; addr += PGSIZE) {
-        change_vbitmap(addr, 0);
+        set_bitmap(vbitmap, addr, 0);  // mark page as free in bitmap
     }
     __sync_lock_test_and_set(&flag, 0);
 }
@@ -304,20 +321,50 @@ void a_free(void *va, int size) {
  * memory pages using virtual address (va)
 */
 void put_value(void *va, void *val, int size) {
-    char *addr;
-    for (int i=0; i < size; i++) {
-        addr = translate(pd, va+i);
-        *addr = *((char*)val+i);
+    void *base = (void*)((unsigned long)va >> OFFSET_BITS << OFFSET_BITS);
+    void *next_page = base+PGSIZE;
+
+    if (size <= next_page-va) {
+        memcpy(translate(pd, va), val, size);
+        return;
+    }
+
+    int first_size = next_page-va;
+    int bytes_copied = first_size;
+    memcpy(translate(pd, va), val, first_size);
+
+    while (bytes_copied+PGSIZE <= size) {
+        memcpy(translate(pd, next_page), val+bytes_copied, PGSIZE);
+        next_page += PGSIZE;
+        bytes_copied += PGSIZE;
+    }
+
+    if (bytes_copied < size) {
+        memcpy(translate(pd, next_page), val+bytes_copied, size - bytes_copied);
     }
 }
 
 
 /*Given a virtual address, this function copies the contents of the page to val*/
 void get_value(void *va, void *val, int size) {
-    char *addr;
-    for (int i=0; i < size; i++) {
-        addr = translate(pd, va+i);
-        *((char*)val+i) = *addr;
+    void *base = (void*)((unsigned long)va >> OFFSET_BITS << OFFSET_BITS);
+    void *next_page = (void*)(base+PGSIZE);
+
+    if (size <= next_page-va) {
+        memcpy(val, translate(pd, va), size);
+        return;
+    }
+
+    memcpy(val, translate(pd, va), next_page-va);
+    int bytes_copied = next_page-va;
+
+    while (bytes_copied+PGSIZE <= size) {
+        memcpy(val+bytes_copied, translate(pd, va+bytes_copied), PGSIZE);
+        bytes_copied += PGSIZE;
+    }
+
+    if (bytes_copied < size) {
+        memcpy(val+bytes_copied, translate(pd, va+bytes_copied), size-bytes_copied);
     }
 }
 
@@ -359,6 +406,22 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer) {
 //     // }
 //     // printf("%d\n", count);
 
-//     a_malloc(1);
-//     printf("%d %d %d\n", PD_BITS, PT_BITS, OFFSET_BITS);
+//     int count = 10;
+
+//     int *a = malloc(count * sizeof(*a));
+//     int *b = malloc(count * sizeof(*b));
+//     for (int i=0; i < count; i++) {
+//         a[i] = i;
+//     }
+//     void *addr = a_malloc(count * sizeof(*addr));
+//     put_value(addr, a, count*sizeof(int));
+//     // get_value(addr, b, count*sizeof(int));
+
+//     for (int i=0; i < count; i++) {
+//         int n;
+//         get_value(addr+i*2, &n, sizeof(int));
+
+//         int *pa = translate(pd, addr);
+//         printf("%d\n", n);
+//     }
 // }

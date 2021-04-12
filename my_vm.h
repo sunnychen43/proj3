@@ -15,12 +15,12 @@
 #define MAX_MEMSIZE (4ULL*1024*1024*1024)
 
 // Size of "physcial memory"
-#define MEMSIZE (1ULL*1024*1024*1024)
+#define MEMSIZE (2ULL*1024*1024*1024)
 
 typedef unsigned long pte_t;
 typedef unsigned long pde_t;
 
-#define TLB_ENTRIES 1024
+#define TLB_ENTRIES 512
 //Structure to represents TLB
 typedef struct tlb_entry_t {
     unsigned long tag;

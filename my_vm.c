@@ -17,20 +17,24 @@
 #define PPAGE_BITMAP_SIZE   (MEMSIZE/PGSIZE/8)
 #define VPAGE_BITMAP_SIZE   (MAX_MEMSIZE/PGSIZE/8)
 
-static int PD_BITS, PT_BITS, OFFSET_BITS, TAG_BITS;
+static int PD_BITS, PT_BITS, OFFSET_BITS;
+static int TAG_BITS, TLB_INDEX_BITS;
 
 
 /********** Local Function Definitions **********/
 
 void set_physical_mem();
 void *find_next_page();
+void set_pbitmap(char *bitmap, void *pa, int val);
 
 int add_TLB(void *va, void *pa);
 void *check_TLB(void *va);
+void print_TLB_missrate();
 
 void set_vbitmap(char *bitmap, void *va, int val);
 void *translate(pde_t *pgdir, void *va);
 int page_map(pde_t *pgdir, void *va, void* pa);
+void *find_next_addr(int num_pages);
 
 
 /********** Static Variable Definitions **********/
@@ -59,7 +63,8 @@ void set_physical_mem() {
     OFFSET_BITS = (int)log2(PGSIZE);
     PT_BITS = MIN(14, (int)log2(PGSIZE/ADDR_SIZE));
     PD_BITS = 32-PT_BITS-OFFSET_BITS;
-    TAG_BITS = (int)log2(TLB_ENTRIES);
+    TLB_INDEX_BITS = (int)log2(TLB_ENTRIES);
+    TAG_BITS = 32-TLB_INDEX_BITS-OFFSET_BITS;
 
     /* Initialize main mem */
     mem = mmap(NULL, MEMSIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -71,14 +76,14 @@ void set_physical_mem() {
     memset(vbitmap, 0, VPAGE_BITMAP_SIZE);
 
     // reserve one page for pd
-    pd = find_next_ppage();
+    pd = find_next_page();
     if (PD_BITS > 10)  // reserve another page if pd has more than 2^10 entries
-        find_next_ppage();
+        find_next_page();
 
     memset(pd, 0, (int)pow(2, PD_BITS)*ADDR_SIZE);
 
     /* Initialize tlb */
-    tlb.bins = malloc(sizeof(*tlb.bins) * TLB_ENTRIES);
+    tlb.bins = malloc(sizeof(*(tlb.bins)) * TLB_ENTRIES);
     for (int i=0; i < TLB_ENTRIES; i++) {
         tlb.bins[i].addr = NULL;  // addr == NULL means tlb entry isn't valid
     }
@@ -124,6 +129,7 @@ void set_pbitmap(char *bitmap, void *pa, int val) {
 /********** TLB Functions **********/
 
 static int miss, access;
+static bool tlb_flag;
 /*
  * Stores a mapping from va -> pa in the tlb. Since this is an internal
  * function (can only be called within my_vm.c), assumes that va is a valid
@@ -132,9 +138,8 @@ static int miss, access;
 int add_TLB(void *va, void *pa) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
     int tag = get_top_bits(addr, TAG_BITS);
-    int index = get_mid_bits(addr, 32-TAG_BITS-OFFSET_BITS, OFFSET_BITS);
-
-    miss++;
+    int index = get_mid_bits(addr, TLB_INDEX_BITS, OFFSET_BITS);
+    
     tlb.bins[index].tag = tag;
     tlb.bins[index].addr = (void*)((unsigned long)pa >> OFFSET_BITS);
 
@@ -148,14 +153,12 @@ int add_TLB(void *va, void *pa) {
 void *check_TLB(void *va) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
     int tag = get_top_bits(addr, TAG_BITS);
-    int index = get_mid_bits(addr, 32-TAG_BITS-OFFSET_BITS, OFFSET_BITS);
-    int offset = get_low_bits(addr, OFFSET_BITS);  // page offset
+    int index = get_mid_bits(addr, TLB_INDEX_BITS, OFFSET_BITS);
 
-    access++;
     // check if tlb entry is valid and tag matches
     if (tlb.bins[index].addr != NULL && tlb.bins[index].tag == tag) { 
-        // addresses are stored w/o offset so we need to include it
-        void *pa = (void*)((unsigned long)tlb.bins[index].addr << OFFSET_BITS) + offset;
+        // addresses are stored w/o offset
+        void *pa = (void*)((unsigned long)tlb.bins[index].addr << OFFSET_BITS);
         return pa;
     }
     else {
@@ -205,14 +208,16 @@ void *translate(pde_t *pgdir, void *va) {
     int offset = get_low_bits(addr, OFFSET_BITS);
 
     void *pa = check_TLB(va);
+    access++;
     if (pa != NULL) {
         return pa+offset;
     }
     else {
+        miss++;
         pte_t *pt = (pte_t*)pd[pd_index];
-        pa = (void*)pt[pt_index]+offset;
+        pa = (void*)pt[pt_index];
         add_TLB(va, pa);
-        return pa; 
+        return pa+offset; 
     }
 }
 
@@ -283,6 +288,10 @@ void *a_malloc(unsigned int num_bytes) {
 
     int num_pages = (int)ceil((double)num_bytes/PGSIZE);
     void *base_va = find_next_addr(num_pages);
+    if (base_va == NULL) {
+        printf("No room in virt address space\n");
+        return NULL;
+    }
     for (int i=0; i < num_pages; i++) {
         void *va = base_va+i*PGSIZE;
         unsigned long addr = (unsigned long)va-VADDR_BASE;
@@ -320,10 +329,13 @@ void a_free(void *va, int size) {
     while (__sync_lock_test_and_set(&flag, 1) == 1) {
     }
     for (void *addr=va; addr < va+size; addr += PGSIZE) {
+        set_vbitmap(vbitmap, addr, 0);
+
         void *pa = translate(pd, addr);
         page_map(pd, va, NULL);
         set_pbitmap(pbitmap, pa, 0);
-        set_vbitmap(vbitmap, addr, 0);
+
+        add_TLB(addr, NULL);
     }
     __sync_lock_test_and_set(&flag, 0);
 }
@@ -403,33 +415,15 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer) {
 }
 
 
-// int main() {
-//     // a_malloc(PGSIZE*1024);
-//     // int count = 0;
-//     // for (int i=0; i < VPAGE_BITMAP_SIZE; i++) {
-//     //     for (int j=0; j < 8; j++) {
-//     //         if (get_bit_at_index(&pbitmap[i], j) == 1)
-//     //             count++;
-//     //     }
-//     // }
-//     // printf("%d\n", count);
-
-//     int count = 10;
-
-//     int *a = malloc(count * sizeof(*a));
-//     int *b = malloc(count * sizeof(*b));
-//     for (int i=0; i < count; i++) {
-//         a[i] = i;
-//     }
-//     void *addr = a_malloc(count * sizeof(*addr));
-//     put_value(addr, a, count*sizeof(int));
-//     // get_value(addr, b, count*sizeof(int));
-
-//     for (int i=0; i < count; i++) {
-//         int n;
-//         get_value(addr+i*2, &n, sizeof(int));
-
-//         int *pa = translate(pd, addr);
-//         printf("%d\n", n);
-//     }
-// }
+int main() {
+    void *addr = a_malloc(1ULL*1024*1024*1024);
+    printf("%p\n", addr);
+    // printf("%p\n", translate(pd, addr));
+    // printf("%p\n", check_TLB(addr));
+    // print_bitmap(vbitmap);
+    // print_bitmap(pbitmap);
+    // a_free(addr, 1);
+    // print_bitmap(vbitmap);
+    // print_bitmap(pbitmap);
+    // print_TLB_missrate();
+}

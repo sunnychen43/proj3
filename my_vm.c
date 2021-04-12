@@ -19,7 +19,7 @@
 
 #define TAG_BITS (int)log2(TLB_ENTRIES)
 
-static int PT_BITS, PD_BITS, OFFSET_BITS;
+static int PD_BITS, PT_BITS, OFFSET_BITS;
 
 
 
@@ -96,7 +96,9 @@ void set_physical_mem() {
 
     // reserve one page for pd
     pd = find_next_ppage();
-    // find_next_ppage();
+    if (PD_BITS > 10)  // reserve another page if pd has more than 2^10 entries
+        find_next_ppage();
+
     memset(pd, 0, (int)pow(2, PD_BITS)*ADDR_SIZE);
 
     pd[0] = (pte_t)find_next_ppage();

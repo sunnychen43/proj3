@@ -9,13 +9,13 @@
 
 //Add any important includes here which you may need
 
-#define PGSIZE (4096)
+#define PGSIZE (4096*32)
 
 // Maximum size of virtual memory
 #define MAX_MEMSIZE (4ULL*1024*1024*1024)
 
 // Size of "physcial memory"
-#define MEMSIZE (2ULL*1024*1024*1024)
+#define MEMSIZE (1ULL*1024*1024*1024)
 
 typedef unsigned long pte_t;
 typedef unsigned long pde_t;

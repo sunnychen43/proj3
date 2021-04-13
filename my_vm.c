@@ -141,7 +141,7 @@ int add_TLB(void *va, void *pa) {
     int index = get_mid_bits(addr, TLB_INDEX_BITS, OFFSET_BITS);
     
     tlb.bins[index].tag = tag;
-    tlb.bins[index].addr = (void*)((unsigned long)pa >> OFFSET_BITS);
+    tlb.bins[index].addr = pa;
 
     return 0;
 }
@@ -157,8 +157,7 @@ void *check_TLB(void *va) {
 
     // check if tlb entry is valid and tag matches
     if (tlb.bins[index].addr != NULL && tlb.bins[index].tag == tag) { 
-        // addresses are stored w/o offset
-        void *pa = (void*)((unsigned long)tlb.bins[index].addr << OFFSET_BITS);
+        void *pa = tlb.bins[index].addr;
         return pa;
     }
     else {
@@ -245,17 +244,7 @@ int page_map(pde_t *pgdir, void *va, void *pa) {
         }
         pd[pd_index] = (pde_t)page;
     }
-
-    pte_t *pt = (pte_t*)pd[pd_index];
-    if (pt[pt_index] != 0) {
-        printf("Mapping already exists\n");
-        return 1;
-    }
-
-    int index = addr >> OFFSET_BITS;
-    int bit = get_bit_at_index(&vbitmap[index/8], index%8);
-    if (bit == 1 || pd[pd_index] == 0)
-        return 1;
+    
     pte_t *pt = (pte_t*)pd[pd_index];
     pt[pt_index] = (pte_t)pa;
     return 0;
@@ -414,16 +403,15 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer) {
     }
 }
 
+// int main() {
 
-int main() {
-    void *addr = a_malloc(1ULL*1024*1024*1024);
-    printf("%p\n", addr);
-    // printf("%p\n", translate(pd, addr));
-    // printf("%p\n", check_TLB(addr));
-    // print_bitmap(vbitmap);
-    // print_bitmap(pbitmap);
-    // a_free(addr, 1);
-    // print_bitmap(vbitmap);
-    // print_bitmap(pbitmap);
-    // print_TLB_missrate();
-}
+//     int x = 5, y=0;
+//     int *z = a_malloc(sizeof(*z));
+
+//     put_value(z, &x, sizeof(int));
+//     get_value(z, &y, sizeof(int));
+
+//     printf("%d\n", y);
+
+//     return 0;
+// }

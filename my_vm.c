@@ -113,9 +113,17 @@ void *find_next_page() {
     return NULL;
 }
 
+/*
+ * Finds the corresponding bit to physical address `pa` and sets it to
+ * val. Assume that bitmap is a valid physical bitmap with the correct
+ * size.
+ */
 void set_pbitmap(char *bitmap, void *pa, int val) {
+    /* mem points to the base of our physical memory, pa should point 
+    to a location with a higher address. The index of the bit in bitmap
+    is the same index of this page in the physical memory. */
     unsigned long offset = (unsigned long)(pa - (void*)mem);
-    unsigned long index = offset >> OFFSET_BITS;
+    unsigned long index = offset >> OFFSET_BITS;  // location in bit map determined by first 32-OFFSET_BITS bits
     
     if (val == 1) {
         set_bit_at_index(&bitmap[index/8], index%8);
@@ -174,9 +182,9 @@ void print_TLB_missrate() {
 /********** Virtual Mem Functions **********/
 
 /*
- * Finds the corresponding bit to virtual address `va` and sets it to
- * val. Assume that bitmap is a valid virtual bitmap with the correct
- * size.
+ * Similar to set_pbitmap(), but calculate the bit index using the virtual
+ * address instead and modify the bit in our virtual bitmap. bitmap should
+ * point to the virtual bitmap.
  */
 void set_vbitmap(char *bitmap, void *va, int val) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
@@ -195,11 +203,12 @@ void set_vbitmap(char *bitmap, void *va, int val) {
 }
 
 /*
- * Translates a virtual address to a physical address. First checks the tlb 
+ * Translates a virtual address to a physical address and returns the physical
+ * address. Returns NULL if va has not yet been mapped to an address.
+ * First checks the tlb 
  * to see if a mapping exists there. If there is, return the address from 
  * tlb. Otherwise, go through the page table and find the physical address, 
- * return it and add mapping to tlb. Returns NULL if va has not been mapped
- * to an address.
+ * return it and add mapping to tlb. 
  */
 void *translate(pde_t *pgdir, void *va) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
@@ -207,41 +216,50 @@ void *translate(pde_t *pgdir, void *va) {
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
     int offset = get_low_bits(addr, OFFSET_BITS);
 
+    // First check if mapping exists in TLB
     void *pa = check_TLB(va);
-    access++;
+    access++;  // accessed tlb
     if (pa != NULL) {
         return pa+offset;
     }
+    // If mapping doesn't exist in TLB, walk though page table
     else {
-        miss++;
+        miss++;  // cold miss
+
+        // make sure page table is allocated and pte exists
         pte_t *pt = (pte_t*)pd[pd_index];
-        if (pt == NULL)
+        if (pt == NULL || pt[pt_index] == 0)
             return NULL;
+
+        // read physical address from page table
         pa = (void*)pt[pt_index];
-        if (pa == NULL)
-            return NULL;
         add_TLB(va, pa);
-        return pa+offset; 
+        return pa+offset;  // only store base pointer of page, so need to add offset
     }
 }
 
 /*
  * This function will walk the page dir to see if there is an existing 
- * mapping for a virtual address. If the virtual address is not present, 
- * returns 1 and a new mapping will be made. Otherwise returns 0 and does 
- * nothing.
+ * mapping for a virtual address. Tries to allocate pages for page table if
+ * it doesn't exist in the page dir yet. Overwrites the current mapping in
+ * the page table with the new physical address, so make sure that there isn't
+ * a current mapping with va before calling this function.
+ * 
+ * Returns 0 on successful mapping, return 1 if page table allocation fails.
  */
 int page_map(pde_t *pgdir, void *va, void *pa) {
     unsigned long addr = (unsigned long)va - VADDR_BASE;
     int pd_index = get_top_bits(addr, PD_BITS);
     int pt_index = get_mid_bits(addr, PT_BITS, OFFSET_BITS);
 
+    // page table hasnt been allocated yet, try to get a page for it
     if (pd[pd_index] == 0) {
         void *page = find_next_page();
         if (page == NULL) {
-            printf("PDE allocation failed\n");
+            printf("Page table allocation failed\n");
             return 1;
         }
+        memset(page, 0, PGSIZE);
         pd[pd_index] = (pde_t)page;
     }
     
@@ -301,7 +319,7 @@ void *a_malloc(unsigned int num_bytes) {
     for (int i=0; i < num_pages; i++) {
         void *va = base_va+i*PGSIZE;
         void *page = find_next_page();
-        if (page_map(pd, va, page) == 1) {
+        if (page == NULL || page_map(pd, va, page) == 1) {
             printf("Malloc failed\n");
             return NULL;
         }

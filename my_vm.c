@@ -39,17 +39,12 @@ void *find_next_addr(int num_pages);
 
 /********** Static Variable Definitions **********/
 
+/* Stored as static variables so they are only accessable locally. User 
+shouldn't be able to access them. */
 static char *mem, *pbitmap, *vbitmap;
-static pde_t *pd;
+static pde_t *pd;  // page dir
 static tlb_t tlb;
-static bool  flag;
-
-void print_bitmap(char *bitmap) {
-    for (int i=0; i < 8; i++) {
-        printf("%d", get_bit_at_index(bitmap, i));
-    }
-    printf("\n");
-}
+static bool  flag;  // flag for spinlock
 
 
 /********** Physical Mem Functions **********/
@@ -79,8 +74,7 @@ void set_physical_mem() {
     pd = find_next_page();
     if (PD_BITS > 10)  // reserve another page if pd has more than 2^10 entries
         find_next_page();
-
-    memset(pd, 0, (int)pow(2, PD_BITS)*ADDR_SIZE);
+    memset(pd, 0, (int)pow(2, PD_BITS)*ADDR_SIZE);  // set all pde to NULL
 
     /* Initialize tlb */
     tlb.bins = malloc(sizeof(*(tlb.bins)) * TLB_ENTRIES);
@@ -259,7 +253,7 @@ int page_map(pde_t *pgdir, void *va, void *pa) {
             printf("Page table allocation failed\n");
             return 1;
         }
-        memset(page, 0, PGSIZE);
+        memset(page, 0, PGSIZE);  // set all pte to NULL
         pd[pd_index] = (pde_t)page;
     }
     
@@ -304,6 +298,7 @@ void *find_next_addr(int num_pages) {
  * return NULL.
  */
 void *a_malloc(unsigned int num_bytes) {
+    // Critical section, spinlock to prevent multiple access at once
     while (__sync_lock_test_and_set(&flag, 1) == 1) {
     }
 
@@ -331,11 +326,16 @@ void *a_malloc(unsigned int num_bytes) {
 }
 
 /* 
- * Frees the virtual memory 
+ * Frees the memory allocated at virtual address va. Freeing works by looping though
+ * all pages a_malloced() starting at va and for each, marking the virtual address 
+ * as free, clearing the mapping in the page table, marking the physical page as free,
+ * and flushing the TLB to remove the previous entry.
  */
 void a_free(void *va, int size) {
+    // Critical section
     while (__sync_lock_test_and_set(&flag, 1) == 1) {
     }
+
     for (void *addr=va; addr < va+size; addr += PGSIZE) {
         set_vbitmap(vbitmap, addr, 0);
 
@@ -349,37 +349,47 @@ void a_free(void *va, int size) {
 
         add_TLB(addr, NULL);
     }
+
     __sync_lock_test_and_set(&flag, 0);
 }
 
-/* The function copies data pointed by "val" to physical
- * memory pages using virtual address (va)
-*/
+/* 
+ * Copies the memory from physical address val to virtual address va. To
+ * speed up large copies, this function uses memcpy() to copy memory page 
+ * by page.
+ */
 void put_value(void *va, void *val, int size) {
-    void *base = (void*)((unsigned long)va >> OFFSET_BITS << OFFSET_BITS);
-    void *next_page = base+PGSIZE;
+    void *base = (void*)((unsigned long)va >> OFFSET_BITS << OFFSET_BITS);  // base ptr of virtual page of va
+    void *next_page = base+PGSIZE;  // next page after va
 
+    // if the memory to be copied fits within 1 page
     if (size <= next_page-va) {
         memcpy(translate(pd, va), val, size);
         return;
     }
 
+    // memory spans across multiple pages
     int first_size = next_page-va;
     int bytes_copied = first_size;
-    memcpy(translate(pd, va), val, first_size);
+    memcpy(translate(pd, va), val, first_size);  // copy first page
 
+    // copy full page
     while (bytes_copied+PGSIZE <= size) {
         memcpy(translate(pd, next_page), val+bytes_copied, PGSIZE);
         next_page += PGSIZE;
         bytes_copied += PGSIZE;
     }
 
+    // copy remaining memory hanging over
     if (bytes_copied < size) {
         memcpy(translate(pd, next_page), val+bytes_copied, size - bytes_copied);
     }
 }
 
-/*Given a virtual address, this function copies the contents of the page to val*/
+/* 
+ * Identical to put_value() but copies in reverse from virtual address va to 
+ * physical address val.
+ */
 void get_value(void *va, void *val, int size) {
     void *base = (void*)((unsigned long)va >> OFFSET_BITS << OFFSET_BITS);
     void *next_page = (void*)(base+PGSIZE);
@@ -403,10 +413,10 @@ void get_value(void *va, void *val, int size) {
 }
 
 /*
-This function receives two matrices mat1 and mat2 as an argument with size
-argument representing the number of rows and columns. After performing matrix
-multiplication, copy the result to answer.
-*/
+ * This function receives two matrices mat1 and mat2 as an argument with size
+ * argument representing the number of rows and columns. After performing matrix
+ * multiplication, copy the result to answer.
+ */
 void mat_mult(void *mat1, void *mat2, int size, void *answer) {
     for (int i=0; i < size; i++) {
         for (int j=0; j < size; j++) {
@@ -425,16 +435,3 @@ void mat_mult(void *mat1, void *mat2, int size, void *answer) {
         }
     }
 }
-
-// int main() {
-
-//     int x = 5, y=0;
-//     int *z = a_malloc(sizeof(*z));
-
-//     put_value(z, &x, sizeof(int));
-//     get_value(z, &y, sizeof(int));
-
-//     printf("%d\n", y);
-
-//     return 0;
-// }

@@ -126,7 +126,7 @@ void set_pbitmap(char *bitmap, void *pa, int val) {
     unsigned long index = offset >> OFFSET_BITS;  // location in bit map determined by first 32-OFFSET_BITS bits
     
     if (val == 1) {
-        set_bit_at_index(&bitmap[index/8], index%8);
+        set_bit_at_index(&bitmap[index/8], index%8);  // bitmap is an array of chars, so 8 bits in each index
     }
     else if (val == 0) {
         clear_bit_at_index(&bitmap[index/8], index%8);
@@ -195,7 +195,7 @@ void set_vbitmap(char *bitmap, void *va, int val) {
     int index = pd_index * pte_per_page + pt_index;
     
     if (val == 1) {
-        set_bit_at_index(&bitmap[index/8], index%8);  // bitmap is an array of chars, so 8 bits in each index
+        set_bit_at_index(&bitmap[index/8], index%8);  
     }
     else if (val == 0) {
         clear_bit_at_index(&bitmap[index/8], index%8);
@@ -330,15 +330,20 @@ void *a_malloc(unsigned int num_bytes) {
     return base_va;
 }
 
-/* Responsible for releasing one or more memory pages using virtual address (va)
-*/
+/* 
+ * Frees the virtual memory 
+ */
 void a_free(void *va, int size) {
     while (__sync_lock_test_and_set(&flag, 1) == 1) {
     }
     for (void *addr=va; addr < va+size; addr += PGSIZE) {
         set_vbitmap(vbitmap, addr, 0);
 
-        void *pa = translate(pd, addr);
+        void *pa = translate(pd, addr);  // make sure addr has been mapped first
+        if (pa == NULL) {
+            printf("Addr not malloced\n");
+            return;
+        }
         page_map(pd, addr, NULL);
         set_pbitmap(pbitmap, pa, 0);
 

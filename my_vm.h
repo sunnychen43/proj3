@@ -8,7 +8,7 @@
 //Assume the address space is 32 bits, so the max memory size is 4GB
 //Page size is 4KB
 
-#define PGSIZE (4096*32)
+#define PGSIZE (4096)
 
 // Maximum size of virtual memory
 #define MAX_MEMSIZE (4ULL*1024*1024*1024)

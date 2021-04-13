@@ -339,7 +339,7 @@ void a_free(void *va, int size) {
         set_vbitmap(vbitmap, addr, 0);
 
         void *pa = translate(pd, addr);
-        page_map(pd, va, NULL);
+        page_map(pd, addr, NULL);
         set_pbitmap(pbitmap, pa, 0);
 
         add_TLB(addr, NULL);

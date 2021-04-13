@@ -10,7 +10,7 @@ my_vm.a: my_vm.o bit.o
 	$(RANLIB) libmy_vm.a
 
 my_vm.o: my_vm.h
-	$(CC)	$(CFLAGS)  my_vm.c
+	$(CC)	$(CFLAGS)  my_vm.c -lpthread
 
 bit.o: bit.h
 	$(CC)	$(CFLAGS)  bit.c

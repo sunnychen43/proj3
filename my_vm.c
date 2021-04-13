@@ -1,10 +1,9 @@
 #include "my_vm.h"
 #include "bit.h"
-#include <math.h>
 #include <sys/mman.h>
 #include <string.h>
 #include <pthread.h>
-#include <stdbool.h>
+#include <math.h>
 
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MAX(a,b) (((a)>(b))?(a):(b))
@@ -298,7 +297,8 @@ void *find_next_addr(int num_pages) {
  * return NULL.
  */
 void *a_malloc(unsigned int num_bytes) {
-    // Critical section, spinlock to prevent multiple access at once
+    /* Critical section, spinlock to prevent multiple access at once. pthread_mutex
+    wasnt working for us so we used a simple spinlock (probably not very efficient)*/
     while (__sync_lock_test_and_set(&flag, 1) == 1) {
     }
 
